@@ -1,7 +1,7 @@
 use crate::metadata::Metadata;
 use crate::package::Artifact;
 use crate::pom::Pom;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use pubgrub::error::PubGrubError;
 use pubgrub::range::Range;
 use pubgrub::report::{DefaultStringReporter, Reporter};
@@ -126,8 +126,7 @@ impl<D: Download> Maven<D> {
             anyhow::ensure!(downloaded, "metadata not found for {}", package);
         }
         let s = std::fs::read_to_string(path)?;
-        let metadata =
-            quick_xml::de::from_str(&s).map_err(|err| anyhow::anyhow!("{}: {}", err, s))?;
+        let metadata = quick_xml::de::from_str(&s).context(s)?;
         Ok(metadata)
     }
 
@@ -135,8 +134,7 @@ impl<D: Download> Maven<D> {
         match self.artifact(artifact, "pom") {
             Ok(path) => {
                 let s = std::fs::read_to_string(path)?;
-                let pom =
-                    quick_xml::de::from_str(&s).map_err(|err| anyhow::anyhow!("{}: {}", err, s))?;
+                let pom = quick_xml::de::from_str(&s).context(s)?;
                 Ok(pom)
             }
             Err(err) => {

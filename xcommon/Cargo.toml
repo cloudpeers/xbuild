@@ -9,6 +9,7 @@ license = "Apache-2.0 OR MIT"
 [dependencies]
 anyhow = "1.0.53"
 byteorder = "1.4.3"
+dunce = "1"
 image = { version = "0.24.0", default-features = false, features = ["png"] }
 pem = "1.0.2"
 rasn = "0.5.0"
