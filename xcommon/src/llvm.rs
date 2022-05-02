@@ -69,7 +69,7 @@ pub fn list_needed_libs_recursively(
 
 /// List all required shared libraries as per the dynamic section
 fn list_needed_libs(library_path: &Path) -> Result<HashSet<String>> {
-    let mut readelf = Command::new("llvm-readelf");
+    let mut readelf = Command::new("llvm-readobj");
     let readelf = readelf.arg("--needed-libs").arg(library_path);
     let output = readelf
         .output()
@@ -81,7 +81,7 @@ fn list_needed_libs(library_path: &Path) -> Result<HashSet<String>> {
         output.status
     );
     let output = std::str::from_utf8(&output.stdout).unwrap();
-    let output = output.strip_prefix("NeededLibraries [\n").unwrap();
+    let (_, output) = output.split_once("NeededLibraries [\n").unwrap();
     let output = output.strip_suffix("]\n").unwrap();
     let mut needed = HashSet::new();
 
