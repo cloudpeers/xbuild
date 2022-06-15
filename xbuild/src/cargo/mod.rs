@@ -1,5 +1,5 @@
-use crate::{Arch, CompileTarget, Opt, Platform};
-use anyhow::Result;
+use crate::{CompileTarget, Opt};
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -101,7 +101,7 @@ impl Cargo {
         artifact: Option<Artifact>,
         ty: CrateType,
     ) -> Result<PathBuf> {
-        let arch_dir = if target.platform() == Platform::host()? && target.arch() == Arch::host()? {
+        let arch_dir = if target.is_host()? {
             target_dir.to_path_buf()
         } else {
             target_dir.join(target.rust_triple()?)
@@ -118,6 +118,51 @@ impl Cargo {
             bin_path.display()
         );
         Ok(bin_path)
+    }
+
+    pub fn lib_search_paths(
+        &self,
+        target_dir: &Path,
+        target: CompileTarget,
+    ) -> Result<Vec<PathBuf>> {
+        let arch_dir = if target.is_host()? {
+            target_dir.to_path_buf()
+        } else {
+            target_dir.join(target.rust_triple()?)
+        };
+        let opt_dir = arch_dir.join(target.opt().to_string());
+        let build_deps_dir = opt_dir.join("build");
+
+        let mut paths = vec![];
+
+        for dep_dir in build_deps_dir.read_dir().with_context(|| {
+            format!(
+                "Scanning crate directories in `{}`",
+                build_deps_dir.display()
+            )
+        })? {
+            let output_file = dep_dir?.path().join("output");
+            if output_file.is_file() {
+                use std::{
+                    fs::File,
+                    io::{BufRead, BufReader},
+                };
+                for line in BufReader::new(File::open(output_file)?).lines() {
+                    let line = line?;
+                    if let Some(link_search) = line.strip_prefix("cargo:rustc-link-search=") {
+                        let (kind, path) =
+                            link_search.split_once('=').unwrap_or(("all", link_search));
+                        match kind {
+                            // FIXME: which kinds of search path we interested in
+                            "dependency" | "native" | "all" => paths.push(path.into()),
+                            _ => (),
+                        };
+                    }
+                }
+            }
+        }
+
+        Ok(paths)
     }
 }
 
@@ -136,10 +181,10 @@ impl CargoBuild {
         target_dir: &Path,
         offline: bool,
     ) -> Result<Self> {
-        let triple = if target.platform() != Platform::host()? || target.arch() != Arch::host()? {
-            Some(target.rust_triple()?)
-        } else {
+        let triple = if target.is_host()? {
             None
+        } else {
+            Some(target.rust_triple()?)
         };
         let mut cmd = Command::new("cargo");
         cmd.current_dir(root_dir);

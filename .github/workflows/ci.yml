@@ -540,6 +540,9 @@ jobs:
         name: ubuntu-latest-x
     - run: chmod +x ./x
 
+    - name: Make llvm-readobj-12 available as llvm-readobj
+      run: sudo ln -s llvm-readobj-12 /usr/bin/llvm-readobj
+
     # install rust
     - uses: hecrj/setup-rust-action@v1
       with:
@@ -605,8 +608,11 @@ jobs:
     - uses: KyleMayes/install-llvm-action@v1
       with:
         version: 13
-    - run: sudo mkdir -p /usr/local/bin
-    - run: sudo ln -s lld-13 /usr/local/bin/lld
+    - name: Make lld-13 and llvm-readobj-13 available as lld and llvm-readobj
+      run: |
+        sudo mkdir -p /usr/local/bin
+        sudo ln -s lld-13 /usr/local/bin/lld
+        sudo ln -s llvm-readobj-13 /usr/local/bin/llvm-readobj
 
     # prepare sources
     - run: ../x new template

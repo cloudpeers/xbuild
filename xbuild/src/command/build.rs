@@ -3,7 +3,7 @@ use crate::download::DownloadManager;
 use crate::flutter::depfile::depfile_is_dirty;
 use crate::task::TaskRunner;
 use crate::{BuildEnv, Format, Opt, Platform};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use apk::Apk;
 use appbundle::AppBundle;
 use appimage::AppImage;
@@ -262,9 +262,67 @@ pub fn build(env: &BuildEnv) -> Result<()> {
             if has_lib {
                 for target in env.target().compile_targets() {
                     let arch_dir = platform_dir.join(target.arch().to_string());
-                    let lib =
-                        env.cargo_artefact(&arch_dir.join("cargo"), target, CrateType::Cdylib)?;
+                    let cargo_dir = arch_dir.join("cargo");
+                    let lib = env.cargo_artefact(&cargo_dir, target, CrateType::Cdylib)?;
                     apk.add_lib(target.android_abi(), &lib)?;
+
+                    let ndk = env.android_ndk();
+
+                    let deps_dir = {
+                        let arch_dir = if target.is_host()? {
+                            cargo_dir.to_path_buf()
+                        } else {
+                            cargo_dir.join(target.rust_triple()?)
+                        };
+                        let opt_dir = arch_dir.join(target.opt().to_string());
+                        opt_dir.join("deps")
+                    };
+
+                    let mut search_paths = env
+                        .cargo()
+                        .lib_search_paths(&cargo_dir, target)
+                        .with_context(|| {
+                            format!(
+                                "Finding libraries in `{}` for {:?}",
+                                cargo_dir.display(),
+                                target
+                            )
+                        })?;
+                    search_paths.push(deps_dir);
+                    let search_paths = search_paths.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+
+                    let ndk_sysroot_libs = ndk.join("usr/lib").join(target.ndk_triple());
+                    let provided_libs_paths = [
+                        ndk_sysroot_libs.as_path(),
+                        &*ndk_sysroot_libs.join(
+                            // Use libraries (symbols) from the lowest NDK that is supported by the application,
+                            // to prevent inadvertently making newer APIs available:
+                            // https://developer.android.com/ndk/guides/sdk-versions
+                            env.manifest()
+                                .android()
+                                .sdk
+                                .min_sdk_version
+                                .unwrap()
+                                .to_string(),
+                        ),
+                    ];
+
+                    let extra_libs = xcommon::llvm::list_needed_libs_recursively(
+                        &lib,
+                        &search_paths,
+                        &provided_libs_paths,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "Failed to collect all required libraries for `{}` with `{:?}` available libraries and `{:?}` shippable libraries",
+                            lib.display(),
+                            provided_libs_paths,
+                            search_paths
+                        )
+                    })?;
+                    for lib in &extra_libs {
+                        apk.add_lib(target.android_abi(), lib)?;
+                    }
                 }
             }
 

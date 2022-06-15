@@ -300,6 +300,7 @@ impl CompileTarget {
             (Arch::Arm64, Platform::Ios) => "aarch64-apple-ios",
             (Arch::Arm64, Platform::Linux) => "aarch64-unknown-linux-gnu",
             (Arch::Arm64, Platform::Macos) => "aarch64-apple-darwin",
+            (Arch::X64, Platform::Android) => "x86_64-linux-android",
             (Arch::X64, Platform::Linux) => "x86_64-unknown-linux-gnu",
             (Arch::X64, Platform::Macos) => "x86_64-apple-darwin",
             (Arch::X64, Platform::Windows) => "x86_64-pc-windows-msvc",
@@ -309,6 +310,10 @@ impl CompileTarget {
                 platform
             ),
         })
+    }
+
+    pub fn is_host(self) -> Result<bool> {
+        Ok(self.platform() == Platform::host()? && self.arch() == Arch::host()?)
     }
 }
 

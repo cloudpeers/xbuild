@@ -18,6 +18,7 @@ impl Default for Doctor {
                         Check::new("clang++", Some(VersionCheck::new("--version", 0, 2))),
                         Check::new("llvm-ar", None),
                         Check::new("llvm-lib", None),
+                        Check::new("llvm-readobj", Some(VersionCheck::new("--version", 1, 4))),
                         Check::new("lld", Some(VersionCheck::new("-flavor ld --version", 0, 1))),
                         Check::new("lld-link", Some(VersionCheck::new("--version", 0, 1))),
                         Check::new("lldb", Some(VersionCheck::new("--version", 0, 2))),
