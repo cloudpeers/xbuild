@@ -126,6 +126,7 @@ pub struct CargoBuild {
     target: CompileTarget,
     triple: Option<&'static str>,
     c_flags: String,
+    cxx_flags: String,
     rust_flags: String,
 }
 
@@ -158,8 +159,9 @@ impl CargoBuild {
             cmd,
             target,
             triple,
-            c_flags: "".into(),
-            rust_flags: "".into(),
+            c_flags: Default::default(),
+            cxx_flags: Default::default(),
+            rust_flags: Default::default(),
         })
     }
 
@@ -171,6 +173,7 @@ impl CargoBuild {
         self.cfg_tool(Tool::Ar, "llvm-ar");
         self.cfg_tool(Tool::Linker, "clang");
         self.set_sysroot(&path);
+        self.add_cxxflag("-stdlib=libc++");
         let lib_dir = path.join("usr").join("lib").join(ndk_triple);
         let sdk_lib_dir = lib_dir.join(target_sdk_version.to_string());
         anyhow::ensure!(
@@ -194,6 +197,7 @@ impl CargoBuild {
         self.cfg_tool(Tool::Linker, "rust-lld");
         self.use_ld("lld-link");
         self.add_target_feature("+crt-static");
+        self.add_cxxflag("-stdlib=libc++");
         self.add_include_dir(&path.join("crt").join("include"));
         self.add_include_dir(&path.join("sdk").join("include").join("um"));
         self.add_include_dir(&path.join("sdk").join("include").join("ucrt"));
@@ -212,6 +216,7 @@ impl CargoBuild {
         self.cfg_tool(Tool::Linker, "clang");
         self.use_ld("lld");
         self.set_sysroot(&path);
+        self.add_cxxflag("-stdlib=libc++");
         self.add_cflag(&format!("-mmacosx-version-min={}", minimum_version));
         self.add_link_arg("--target=x86_64-apple-darwin");
         self.add_link_arg(&format!("-mmacosx-version-min={}", minimum_version));
@@ -241,6 +246,7 @@ impl CargoBuild {
         self.cfg_tool(Tool::Linker, "clang");
         self.use_ld("lld");
         self.set_sysroot(&path);
+        self.add_cxxflag("-stdlib=libc++");
         self.add_cflag(&format!("-miphoneos-version-min={}", minimum_version));
         self.add_link_arg("--target=arm64-apple-ios");
         self.add_link_arg(&format!("-miphoneos-version-min={}", minimum_version));
@@ -329,6 +335,11 @@ impl CargoBuild {
         self.c_flags.push(' ');
     }
 
+    pub fn add_cxxflag(&mut self, flag: &str) {
+        self.cxx_flags.push_str(flag);
+        self.cxx_flags.push(' ');
+    }
+
     pub fn use_ld(&mut self, name: &str) {
         self.add_link_arg(&format!("-fuse-ld={}", name));
     }
@@ -340,7 +351,8 @@ impl CargoBuild {
     pub fn exec(mut self) -> Result<()> {
         self.cargo_target_env("RUSTFLAGS", &self.rust_flags.clone());
         self.cc_triple_env("CFLAGS", &self.c_flags.clone());
-        self.cc_triple_env("CXXFLAGS", &self.c_flags.clone());
+        // These strings already end with a space if they're non-empty:
+        self.cc_triple_env("CXXFLAGS", &format!("{}{}", self.c_flags, self.cxx_flags));
         if !self.cmd.status()?.success() {
             std::process::exit(1);
         }
