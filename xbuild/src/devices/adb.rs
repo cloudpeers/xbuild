@@ -1,206 +1,121 @@
-use crate::devices::{Backend, Device, PartialRunner};
+use crate::devices::{DeviceId, PartialRunner};
 use crate::{Arch, Platform};
+use adb_rs::push::AdbPush;
+use adb_rs::{AdbClient, AdbConnection};
 use anyhow::Result;
 use apk::Apk;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
-use std::time::Duration;
+use rsa::pkcs8::DecodePrivateKey;
+use rsa::RsaPrivateKey;
+use std::collections::VecDeque;
+use std::path::Path;
 
-#[derive(Clone, Debug)]
-pub(crate) struct Adb(PathBuf);
+#[derive(Debug)]
+pub(crate) struct Adb {
+    conn: AdbConnection,
+    id: DeviceId,
+}
 
 impl Adb {
-    pub fn which() -> Result<Self> {
-        Ok(Self(which::which(exe!("adb"))?))
-    }
-
-    fn adb(&self, device: &str) -> Command {
-        let mut cmd = Command::new(&self.0);
-        cmd.arg("-s").arg(device);
-        cmd
-    }
-
-    fn push(&self, device: &str, path: &Path) -> Result<()> {
-        let status = self
-            .adb(device)
-            .arg("push")
-            .arg("--sync")
-            .arg(path)
-            .arg("/data/local/tmp")
-            .status()?;
-        anyhow::ensure!(status.success(), "adb push failed");
+    pub fn devices(_devices: &mut [DeviceId]) -> Result<()> {
+        // usb not supported yet
+        // mdns not supported yet
         Ok(())
     }
 
-    fn shell(&self, device: &str, run_as: Option<&str>) -> Command {
-        let mut cmd = self.adb(device);
-        cmd.arg("shell").arg("-x");
-        if let Some(package) = run_as {
-            cmd.arg("run-as").arg(package);
-        }
-        cmd
+    pub fn connect(device: String) -> Result<Self> {
+        // TODO:
+        // let private_key = mdb::adb::adbkey()?;
+        let private_key = RsaPrivateKey::read_pkcs8_pem_file("/home/dvc/.android/adbkey").unwrap();
+        Ok(Self {
+            conn: AdbClient::new(private_key, "host::").connect(&device)?,
+            id: DeviceId::Adb(device),
+        })
     }
 
-    pub fn devices(&self, devices: &mut Vec<Device>) -> Result<()> {
-        let output = Command::new(&self.0).arg("devices").output()?;
-        anyhow::ensure!(
-            output.status.success(),
-            "adb devices exited with code {:?}",
-            output.status.code()
-        );
-        let mut lines = std::str::from_utf8(&output.stdout)?.lines();
-        lines.next();
-        for line in lines {
-            if let Some(id) = line.split_whitespace().next() {
-                devices.push(Device {
-                    backend: Backend::Adb(self.clone()),
-                    id: id.to_string(),
-                });
-            }
-        }
+    pub fn id(&self) -> &DeviceId {
+        &self.id
+    }
+
+    pub fn push(&mut self, local_path: &Path, remote_path: &str) -> Result<()> {
+        println!("push {} {}", local_path.display(), remote_path);
+        let file_name = local_path.file_name().unwrap().to_str().unwrap();
+        let remote_path = remote_path.trim_end_matches('/');
+        let remote_path = format!("{}/{}", remote_path, file_name);
+        self.conn.push(local_path, &remote_path)?;
         Ok(())
     }
 
-    fn getprop(&self, device: &str, prop: &str) -> Result<String> {
-        let output = self.shell(device, None).arg("getprop").arg(prop).output()?;
-        anyhow::ensure!(
-            output.status.success(),
-            "adb getprop exited with code {:?}",
-            output.status.code()
-        );
-        Ok(std::str::from_utf8(&output.stdout)?.trim().to_string())
+    pub fn shell(&mut self, command: &str) -> Result<Vec<u8>> {
+        println!("{}", command);
+        self.conn.shell(command)
     }
 
-    fn install(&self, device: &str, path: &Path) -> Result<()> {
+    fn getprop(&mut self, prop: &str) -> Result<String> {
+        let output = self.shell(&format!("getprop {}", prop))?;
+        Ok(std::str::from_utf8(&output)?.trim().to_string())
+    }
+
+    fn install(&mut self, path: &Path) -> Result<()> {
         let file_name = path.file_name().unwrap().to_str().unwrap();
-        self.push(device, path)?;
-        let status = self
-            .shell(device, None)
-            .arg("pm")
-            .arg("install")
-            .arg(format!("/data/local/tmp/{}", file_name))
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "adb pm install exited with code {:?}",
-            status.code()
-        );
+        self.push(path, "/data/local/tmp".as_ref())?;
+        self.shell(&format!("pm install /data/local/tmp/{}", file_name))?;
         Ok(())
     }
 
     /// To run a native activity use "android.app.NativeActivity" as the activity name
-    fn start(&self, device: &str, package: &str, activity: &str) -> Result<()> {
-        let status = self
-            .shell(device, None)
-            .arg("am")
-            .arg("start")
-            .arg("-a")
-            .arg("android.intent.action.RUN")
-            .arg("-n")
-            .arg(format!("{}/{}", package, activity))
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "adb shell am start exited with code {:?}",
-            status.code()
-        );
+    fn start(&mut self, package: &str, activity: &str) -> Result<()> {
+        self.shell(&format!(
+            "am start -a android.intent.action.RUN -n {}/{}",
+            package, activity
+        ))?;
         Ok(())
     }
 
-    fn stop(&self, device: &str, id: &str) -> Result<()> {
-        let status = self
-            .shell(device, None)
-            .arg("am")
-            .arg("force-stop")
-            .arg(id)
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "adb shell am force-stop exited with code {:?}",
-            status.code()
-        );
+    fn stop(&mut self, id: &str) -> Result<()> {
+        self.shell(&format!("am force-stop {}", id))?;
         Ok(())
     }
 
-    fn set_debug_app(&self, device: &str, package: &str) -> Result<()> {
-        let status = self
-            .shell(device, None)
-            .arg("am")
-            .arg("set-debug-app")
-            .arg("-w")
-            .arg(package)
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "adb shell am set-debug-app exited with code {:?}",
-            status.code()
-        );
+    fn set_debug_app(&mut self, package: &str) -> Result<()> {
+        self.shell(&format!("am set-debug-app -w {}", package))?;
         Ok(())
     }
 
-    fn clear_debug_app(&self, device: &str) -> Result<()> {
-        let status = self
-            .shell(device, None)
-            .arg("am")
-            .arg("clear-debug-app")
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "adb shell am clear-debug-app exited with code {:?}",
-            status.code()
-        );
+    fn clear_debug_app(&mut self) -> Result<()> {
+        self.shell("am clear-debug-app")?;
         Ok(())
     }
 
-    fn logcat_last_timestamp(&self, device: &str) -> Result<String> {
-        let output = self
-            .shell(device, None)
-            .arg("logcat")
-            .arg("-v")
-            .arg("time")
-            .arg("-t")
-            .arg("1")
-            .output()?;
-        anyhow::ensure!(
-            output.status.success(),
-            "adb logcat exited with code {:?}",
-            output.status.code()
-        );
-        let line = std::str::from_utf8(&output.stdout)?.lines().nth(1).unwrap();
+    fn logcat_last_timestamp(&mut self) -> Result<String> {
+        let output = self.shell("logcat -v time -t 1")?;
+        let line = std::str::from_utf8(&output)?.lines().nth(1).unwrap();
         Ok(line[..18].to_string())
     }
 
-    fn pidof(&self, device: &str, id: &str) -> Result<u32> {
+    fn pidof(&mut self, id: &str) -> Result<u32> {
         loop {
-            let output = self.shell(device, None).arg("pidof").arg(id).output()?;
-            anyhow::ensure!(output.status.success(), "failed to get pid");
-            let pid = std::str::from_utf8(&output.stdout)?.trim();
+            let output = self.shell(&format!("pidof {}", id))?;
+            let pid = std::str::from_utf8(&output)?.trim();
             // may return multiple space separated pids if the old process hasn't exited yet.
             if pid.is_empty() || pid.split_once(' ').is_some() {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
-            println!("pid of {} is {}", id, pid);
             return Ok(pid.parse()?);
         }
     }
 
-    fn logcat(&self, device: &str, pid: u32, last_timestamp: &str) -> Result<Logcat> {
-        let child = self
-            .shell(device, None)
-            .arg("logcat")
-            .arg("-T")
-            .arg(format!("'{}'", last_timestamp))
-            .arg(format!("--pid={}", pid))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .spawn()?;
-        Ok(Logcat::new(child))
+    fn logcat(&mut self, pid: u32, last_timestamp: &str) -> Result<Logcat> {
+        let iter = self
+            .conn
+            .shell_stream(&format!("logcat -T '{}' --pid={}", last_timestamp, pid))?;
+        Ok(Logcat::new(iter))
     }
 
-    pub fn forward(&self, device: &str, port: u16) -> Result<u16> {
-        let output = self
+    pub fn forward(&mut self, _port: u16) -> Result<u16> {
+        // TODO: impl forward
+        todo!()
+        /*let output = self
             .adb(device)
             .arg("forward")
             .arg("tcp:0")
@@ -211,7 +126,7 @@ impl Adb {
             "adb forward exited with code {:?}",
             output.status.code()
         );
-        Ok(std::str::from_utf8(&output.stdout)?.trim().parse()?)
+        Ok(std::str::from_utf8(&output.stdout)?.trim().parse()?)*/
     }
 
     /*fn app_dir(&self, device: &str, package: &str) -> Result<PathBuf> {
@@ -225,8 +140,10 @@ impl Adb {
         Ok(Path::new(std::str::from_utf8(&output.stdout)?.trim()).to_path_buf())
     }*/
 
-    pub fn lldb(&self, device: &str, lldb_server: &Path, executable: &Path) -> Result<()> {
-        /*let package = env.manifest().android().package.as_ref().unwrap();
+    pub fn lldb(&mut self, _lldb_server: &Path, _executable: &Path) -> Result<()> {
+        // TODO: impl adb lldb
+        todo!();
+        /*/*let package = env.manifest().android().package.as_ref().unwrap();
         let app_dir = self.app_dir(device, package)?;
         self.shell(device, Some(package))
             .arg("chmod")
@@ -234,7 +151,7 @@ impl Adb {
             .arg(&app_dir)
             .status()?;
         let dest = app_dir.join("lldb-server");*/
-        self.push(device, lldb_server)?;
+        self.push(lldb_server, "/data/local/tmp")?;
         /*self.shell(device, None)
             .arg("cat")
             .arg("/data/local/tmp/lldb-server")
@@ -251,16 +168,7 @@ impl Adb {
             .arg(&dest)
             .status()?;*/
         let mut lldb_server = self
-            .shell(device, None)
-            .arg("cd")
-            .arg("/data/local/tmp")
-            .arg("&&")
-            .arg("./lldb-server")
-            .arg("platform")
-            .arg("--listen")
-            .arg("*:10086")
-            .arg("--server")
-            .stdin(Stdio::null())
+            .shell("cd /data/local/tmp && ./lldb-server platform --listen *:10086 --server")?;
             .spawn()?;
         std::thread::sleep(Duration::from_millis(100));
         self.forward(device, 10086)?;
@@ -276,30 +184,24 @@ impl Adb {
             .status()?;
         anyhow::ensure!(status.success(), "lldb exited with nonzero exit code.");
         lldb_server.kill()?;
-        Ok(())
+        Ok(())*/
     }
 
-    pub fn run(
-        &self,
-        device: &str,
-        path: &Path,
-        flutter_attach: bool,
-        debug: bool,
-    ) -> Result<PartialRunner> {
+    pub fn run(&mut self, path: &Path, flutter_attach: bool, debug: bool) -> Result<PartialRunner> {
         let entry_point = Apk::entry_point(path)?;
         let package = &entry_point.package;
         let activity = &entry_point.activity;
-        self.stop(device, package)?;
+        self.stop(package)?;
         if debug {
-            self.set_debug_app(device, package)?;
+            self.set_debug_app(package)?;
         } else {
-            self.clear_debug_app(device)?;
+            self.clear_debug_app()?;
         }
-        self.install(device, path)?;
-        let last_timestamp = self.logcat_last_timestamp(device)?;
-        self.start(device, package, activity)?;
-        let pid = self.pidof(device, package)?;
-        let mut logcat = self.logcat(device, pid, &last_timestamp)?;
+        self.install(path)?;
+        let last_timestamp = self.logcat_last_timestamp()?;
+        self.start(package, activity)?;
+        let pid = self.pidof(package)?;
+        let mut logcat = self.logcat(pid, &last_timestamp)?;
         let url = if flutter_attach {
             let url = loop {
                 if let Some(line) = logcat.next() {
@@ -326,16 +228,16 @@ impl Adb {
         })
     }
 
-    pub fn name(&self, device: &str) -> Result<String> {
-        self.getprop(device, "ro.product.device")
+    pub fn name(&mut self) -> Result<String> {
+        self.getprop("ro.product.device")
     }
 
-    pub fn platform(&self, _device: &str) -> Result<Platform> {
+    pub fn platform(&self) -> Result<Platform> {
         Ok(Platform::Android)
     }
 
-    pub fn arch(&self, device: &str) -> Result<Arch> {
-        let arch = match self.getprop(device, "ro.product.cpu.abi")?.as_str() {
+    pub fn arch(&mut self) -> Result<Arch> {
+        let arch = match self.getprop("ro.product.cpu.abi")?.as_str() {
             "arm64-v8a" => Arch::Arm64,
             //"armeabi-v7a" => Arch::Arm,
             "x86_64" => Arch::X64,
@@ -345,27 +247,23 @@ impl Adb {
         Ok(arch)
     }
 
-    pub fn details(&self, device: &str) -> Result<String> {
-        let release = self.getprop(device, "ro.build.version.release")?;
-        let sdk = self.getprop(device, "ro.build.version.sdk")?;
+    pub fn details(&mut self) -> Result<String> {
+        let release = self.getprop("ro.build.version.release")?;
+        let sdk = self.getprop("ro.build.version.sdk")?;
         Ok(format!("Android {} (API {})", release, sdk))
     }
 }
 
 pub struct Logcat {
-    child: Child,
-    reader: BufReader<ChildStdout>,
-    line: String,
+    stream: Box<dyn Iterator<Item = Vec<u8>> + Send>,
+    lines: VecDeque<String>,
 }
 
 impl Logcat {
-    fn new(mut child: Child) -> Self {
-        let stdout = child.stdout.take().expect("child missing stdout");
-        let reader = BufReader::new(stdout);
+    fn new(stream: impl Iterator<Item = Vec<u8>> + Send + 'static) -> Self {
         Self {
-            child,
-            reader,
-            line: String::with_capacity(1024),
+            stream: Box::new(stream),
+            lines: VecDeque::new(),
         }
     }
 }
@@ -375,28 +273,23 @@ impl Iterator for Logcat {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            self.line.clear();
-            match self.reader.read_line(&mut self.line) {
-                Ok(0) => return None,
-                Ok(_) => {
-                    let line = self.line.trim();
-                    if let Some((date, line)) = line.split_once(' ') {
-                        if let Some((time, line)) = line.split_once(' ') {
-                            if date.len() == 5 && time.len() == 12 {
-                                return Some(line.to_string());
-                            }
+            if let Some(line) = self.lines.pop_front() {
+                return Some(line);
+            }
+            let packet = self.stream.next()?;
+            let packet = std::str::from_utf8(&packet).unwrap();
+            for line in packet.split('\n') {
+                let line = line.trim();
+                if let Some((date, line)) = line.split_once(' ') {
+                    if let Some((time, line)) = line.split_once(' ') {
+                        if date.len() == 5 && time.len() == 12 {
+                            self.lines.push_back(line.to_string());
+                            continue;
                         }
                     }
-                    return Some(self.line.clone());
                 }
-                Err(_) => {}
+                self.lines.push_back(line.to_string());
             }
         }
-    }
-}
-
-impl Drop for Logcat {
-    fn drop(&mut self) {
-        self.child.kill().ok();
     }
 }

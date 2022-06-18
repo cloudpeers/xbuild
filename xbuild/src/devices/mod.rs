@@ -10,35 +10,35 @@ mod adb;
 mod host;
 mod imd;
 
-#[derive(Clone, Debug)]
-enum Backend {
-    Adb(Adb),
-    Imd(IMobileDevice),
-    Host(Host),
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeviceId {
+    Host,
+    Adb(String),
+    Imd(String),
 }
 
-#[derive(Clone, Debug)]
-pub struct Device {
-    backend: Backend,
-    id: String,
+impl DeviceId {
+    fn raw(&self) -> &str {
+        match self {
+            Self::Host => "host",
+            Self::Adb(id) => id,
+            Self::Imd(id) => id,
+        }
+    }
 }
 
-impl std::str::FromStr for Device {
+impl std::str::FromStr for DeviceId {
     type Err = anyhow::Error;
 
     fn from_str(device: &str) -> Result<Self> {
         if device == "host" {
-            return Ok(Self::host());
+            return Ok(Self::Host);
         }
         if let Some((backend, id)) = device.split_once(':') {
-            let backend = match backend {
-                "adb" => Backend::Adb(Adb::which()?),
-                "imd" => Backend::Imd(IMobileDevice::which()?),
+            Ok(match backend {
+                "adb" => Self::Adb(id.to_string()),
+                "imd" => Self::Imd(id.to_string()),
                 _ => anyhow::bail!("unsupported backend {}", backend),
-            };
-            Ok(Self {
-                backend,
-                id: id.to_string(),
             })
         } else {
             anyhow::bail!("invalid device identifier {}", device);
@@ -46,95 +46,106 @@ impl std::str::FromStr for Device {
     }
 }
 
-impl std::fmt::Display for Device {
+impl std::fmt::Display for DeviceId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match &self.backend {
-            Backend::Adb(_) => write!(f, "adb:{}", &self.id),
-            Backend::Host(_) => write!(f, "{}", &self.id),
-            Backend::Imd(_) => write!(f, "imd:{}", &self.id),
+        match self {
+            Self::Adb(id) => write!(f, "adb:{}", &id),
+            Self::Host => write!(f, "host"),
+            Self::Imd(id) => write!(f, "imd:{}", &id),
         }
     }
 }
 
+#[derive(Debug)]
+pub struct Device(DeviceInner);
+
+#[derive(Debug)]
+enum DeviceInner {
+    Host(Host),
+    Adb(Adb),
+    Imd(IMobileDevice),
+}
+
 impl Device {
-    pub fn list() -> Result<Vec<Self>> {
-        let mut devices = vec![Self::host()];
-        if let Ok(adb) = Adb::which() {
-            adb.devices(&mut devices)?;
-        }
-        if let Ok(imd) = IMobileDevice::which() {
-            imd.devices(&mut devices).ok();
-        }
+    pub fn list() -> Result<Vec<DeviceId>> {
+        let mut devices = vec![DeviceId::Host];
+        Adb::devices(&mut devices)?;
+        IMobileDevice::devices(&mut devices).ok();
         Ok(devices)
     }
 
-    pub fn host() -> Self {
-        Self {
-            backend: Backend::Host(Host),
-            id: "host".to_string(),
+    pub fn connect(device: DeviceId) -> Result<Self> {
+        Ok(Device(match device {
+            DeviceId::Host => DeviceInner::Host(Host),
+            DeviceId::Adb(id) => DeviceInner::Adb(Adb::connect(id)?),
+            DeviceId::Imd(id) => DeviceInner::Imd(IMobileDevice::connect(id)?),
+        }))
+    }
+
+    pub fn id(&self) -> &DeviceId {
+        match &self.0 {
+            DeviceInner::Host(host) => host.id(),
+            DeviceInner::Adb(adb) => adb.id(),
+            DeviceInner::Imd(imd) => imd.id(),
         }
     }
 
-    pub fn is_host(&self) -> bool {
-        matches!(&self.backend, Backend::Host(_))
-    }
-
-    pub fn name(&self) -> Result<String> {
-        match &self.backend {
-            Backend::Adb(adb) => adb.name(&self.id),
-            Backend::Host(host) => host.name(),
-            Backend::Imd(imd) => imd.name(&self.id),
+    pub fn name(&mut self) -> Result<String> {
+        match &mut self.0 {
+            DeviceInner::Adb(adb) => adb.name(),
+            DeviceInner::Host(host) => host.name(),
+            DeviceInner::Imd(imd) => imd.name(),
         }
     }
 
-    pub fn platform(&self) -> Result<Platform> {
-        match &self.backend {
-            Backend::Adb(adb) => adb.platform(&self.id),
-            Backend::Host(host) => host.platform(),
-            Backend::Imd(imd) => imd.platform(&self.id),
+    pub fn platform(&mut self) -> Result<Platform> {
+        match &mut self.0 {
+            DeviceInner::Adb(adb) => adb.platform(),
+            DeviceInner::Host(host) => host.platform(),
+            DeviceInner::Imd(imd) => imd.platform(),
         }
     }
 
-    pub fn arch(&self) -> Result<Arch> {
-        match &self.backend {
-            Backend::Adb(adb) => adb.arch(&self.id),
-            Backend::Host(host) => host.arch(),
-            Backend::Imd(imd) => imd.arch(&self.id),
+    pub fn arch(&mut self) -> Result<Arch> {
+        match &mut self.0 {
+            DeviceInner::Adb(adb) => adb.arch(),
+            DeviceInner::Host(host) => host.arch(),
+            DeviceInner::Imd(imd) => imd.arch(),
         }
     }
 
-    pub fn details(&self) -> Result<String> {
-        match &self.backend {
-            Backend::Adb(adb) => adb.details(&self.id),
-            Backend::Host(host) => host.details(),
-            Backend::Imd(imd) => imd.details(&self.id),
+    pub fn details(&mut self) -> Result<String> {
+        match &mut self.0 {
+            DeviceInner::Adb(adb) => adb.details(),
+            DeviceInner::Host(host) => host.details(),
+            DeviceInner::Imd(imd) => imd.details(),
         }
     }
 
-    pub fn run(&self, path: &Path, attach: bool) -> Result<Runner> {
-        let runner = match &self.backend {
-            Backend::Adb(adb) => adb.run(&self.id, path, attach, false),
-            Backend::Host(host) => host.run(path, attach),
-            Backend::Imd(imd) => imd.run(&self.id, path, attach),
+    pub fn run(mut self, path: &Path, attach: bool) -> Result<Runner> {
+        let runner = match &mut self.0 {
+            DeviceInner::Adb(adb) => adb.run(path, attach, false),
+            DeviceInner::Host(host) => host.run(path, attach),
+            DeviceInner::Imd(imd) => imd.run(path, attach),
         }?;
-        Ok(Runner::new(self.clone(), runner))
+        Ok(Runner::new(self, runner))
     }
 
-    pub fn lldb(&self, executable: &Path, lldb_server: Option<&Path>) -> Result<()> {
-        match &self.backend {
-            Backend::Adb(adb) => {
+    pub fn lldb(&mut self, executable: &Path, lldb_server: Option<&Path>) -> Result<()> {
+        match &mut self.0 {
+            DeviceInner::Adb(adb) => {
                 if let Some(lldb_server) = lldb_server {
-                    adb.lldb(&self.id, executable, lldb_server)
+                    adb.lldb(executable, lldb_server)
                 } else {
                     anyhow::bail!("lldb-server required on android");
                 }
             }
-            Backend::Host(host) => host.lldb(executable),
-            Backend::Imd(imd) => imd.lldb(&self.id, executable),
+            DeviceInner::Host(host) => host.lldb(executable),
+            DeviceInner::Imd(imd) => imd.lldb(executable),
         }
     }
 
-    pub fn attach(&self, url: &str, root_dir: &Path, target: &Path) -> Result<()> {
+    pub fn attach(&mut self, url: &str, root_dir: &Path, target: &Path) -> Result<()> {
         let port = url
             .strip_prefix("http://127.0.0.1:")
             .unwrap()
@@ -142,15 +153,16 @@ impl Device {
             .unwrap()
             .0
             .parse()?;
-        let host_vmservice_port = match &self.backend {
-            Backend::Adb(adb) => Some(adb.forward(&self.id, port)?),
+        let host_vmservice_port = match &mut self.0 {
+            DeviceInner::Adb(adb) => Some(adb.forward(port)?),
             _ => None,
         };
         // TODO: finish porting flutter attach to rust
         //crate::command::attach(url, root_dir, target, host_vmservice_port).await?;
-        let device = match &self.backend {
-            Backend::Host(host) => host.platform()?.to_string(),
-            _ => self.id.to_string(),
+        let device = match &mut self.0 {
+            DeviceInner::Host(host) => host.platform()?.to_string(),
+            DeviceInner::Adb(adb) => adb.id().raw().to_string(),
+            DeviceInner::Imd(imd) => imd.id().raw().to_string(),
         };
         let mut attach = Command::new("flutter");
         attach
@@ -202,7 +214,7 @@ impl Runner {
         self.url.as_deref()
     }
 
-    pub fn attach(self, root_dir: &Path, target: &Path) -> Result<()> {
+    pub fn attach(mut self, root_dir: &Path, target: &Path) -> Result<()> {
         if let Some(url) = self.url.as_ref() {
             std::thread::spawn(self.logger);
             self.device.attach(url, root_dir, target)?;

@@ -1,14 +1,14 @@
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
-use xbuild::devices::Device;
+use xbuild::devices::{Device, DeviceId};
 
 #[derive(Parser)]
 pub struct Args {
     #[clap(long)]
     path: PathBuf,
     #[clap(long)]
-    device: Option<Device>,
+    device: Option<DeviceId>,
 }
 
 fn main() -> Result<()> {
@@ -23,7 +23,8 @@ fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber).ok();
     log_panics::init();
     let args = Args::parse();
-    let device = args.device.unwrap_or_else(Device::host);
+    let device_id = args.device.unwrap_or(DeviceId::Host);
+    let device = Device::connect(device_id)?;
     let runner = device.run(&args.path, true)?;
     if let Some(url) = runner.url() {
         println!("found url {}", url);

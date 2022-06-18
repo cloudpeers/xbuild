@@ -74,22 +74,22 @@ impl Commands {
             Self::Devices => command::devices()?,
             Self::New { name } => command::new(&name)?,
             Self::Update { args } => {
-                let env = BuildEnv::new(args)?;
+                let (env, _device) = BuildEnv::new(args)?;
                 command::update(&env)?;
             }
             Self::Build { args } => {
-                let env = BuildEnv::new(args)?;
+                let (env, _device) = BuildEnv::new(args)?;
                 command::build(&env)?;
             }
             Self::Run { args } => {
-                let env = BuildEnv::new(args)?;
+                let (env, device) = BuildEnv::new(args)?;
                 command::build(&env)?;
-                command::run(&env)?;
+                command::run(&env, device)?;
             }
             Self::Lldb { args } => {
-                let env = BuildEnv::new(args)?;
+                let (env, device) = BuildEnv::new(args)?;
                 command::build(&env)?;
-                command::lldb(&env)?;
+                command::lldb(&env, device)?;
             } /*Self::Attach {
                   url,
                   root_dir,

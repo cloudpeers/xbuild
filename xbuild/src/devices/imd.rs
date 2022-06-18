@@ -1,4 +1,4 @@
-use crate::devices::{Backend, Device, PartialRunner};
+use crate::devices::{DeviceId, PartialRunner};
 use crate::{Arch, Platform};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -6,26 +6,51 @@ use std::process::Command;
 
 #[derive(Clone, Debug)]
 pub(crate) struct IMobileDevice {
-    idevice_id: PathBuf,
+    id: DeviceId,
     ideviceinfo: PathBuf,
     ideviceinstaller: PathBuf,
     idevicedebug: PathBuf,
 }
 
 impl IMobileDevice {
-    pub fn which() -> Result<Self> {
+    pub fn devices(devices: &mut Vec<DeviceId>) -> Result<()> {
+        let output = Command::new(exe!("idevice_id"))
+            .arg("-l")
+            .arg("-d")
+            .output()?;
+        anyhow::ensure!(output.status.success(), "failed to run idevice_id");
+        let lines = std::str::from_utf8(&output.stdout)?.lines();
+        for uuid in lines {
+            devices.push(DeviceId::Imd(uuid.trim().to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn connect(device: String) -> Result<Self> {
         Ok(Self {
-            idevice_id: which::which(exe!("idevice_id"))?,
+            id: DeviceId::Imd(device),
             ideviceinfo: which::which(exe!("ideviceinfo"))?,
             ideviceinstaller: which::which(exe!("ideviceinstaller"))?,
             idevicedebug: which::which(exe!("idevicedebug"))?,
         })
     }
 
-    fn getkey(&self, device: &str, key: &str) -> Result<String> {
+    pub fn id(&self) -> &DeviceId {
+        &self.id
+    }
+
+    fn device(&self) -> &str {
+        if let DeviceId::Imd(id) = &self.id {
+            id
+        } else {
+            unreachable!()
+        }
+    }
+
+    fn getkey(&self, key: &str) -> Result<String> {
         let output = Command::new(&self.ideviceinfo)
             .arg("--udid")
-            .arg(device)
+            .arg(self.device())
             .arg("--key")
             .arg(key)
             .output()?;
@@ -33,10 +58,10 @@ impl IMobileDevice {
         Ok(std::str::from_utf8(&output.stdout)?.trim().to_string())
     }
 
-    fn install(&self, device: &str, path: &Path) -> Result<()> {
+    fn install(&self, path: &Path) -> Result<()> {
         let status = Command::new(&self.ideviceinstaller)
             .arg("--udid")
-            .arg(device)
+            .arg(self.device())
             .arg("--install")
             .arg(path)
             .status()?;
@@ -44,10 +69,10 @@ impl IMobileDevice {
         Ok(())
     }
 
-    fn start(&self, device: &str, bundle_identifier: &str) -> Result<()> {
+    fn start(&self, bundle_identifier: &str) -> Result<()> {
         let status = Command::new(&self.idevicedebug)
             .arg("--udid")
-            .arg(device)
+            .arg(self.device())
             .arg("run")
             .arg(bundle_identifier)
             .status()?;
@@ -55,10 +80,10 @@ impl IMobileDevice {
         Ok(())
     }
 
-    pub fn run(&self, device: &str, path: &Path, _flutter_attach: bool) -> Result<PartialRunner> {
+    pub fn run(&self, path: &Path, _flutter_attach: bool) -> Result<PartialRunner> {
         let bundle_identifier = appbundle::app_bundle_identifier(path)?;
-        self.install(device, path)?;
-        self.start(device, &bundle_identifier)?;
+        self.install(path)?;
+        self.start(&bundle_identifier)?;
         // TODO: log, attach
         Ok(PartialRunner {
             url: None,
@@ -67,44 +92,28 @@ impl IMobileDevice {
         })
     }
 
-    pub fn devices(&self, devices: &mut Vec<Device>) -> Result<()> {
-        let output = Command::new(&self.idevice_id)
-            .arg("-l")
-            .arg("-d")
-            .output()?;
-        anyhow::ensure!(output.status.success(), "failed to run idevice_id");
-        let lines = std::str::from_utf8(&output.stdout)?.lines();
-        for uuid in lines {
-            devices.push(Device {
-                backend: Backend::Imd(self.clone()),
-                id: uuid.trim().to_string(),
-            });
-        }
-        Ok(())
+    pub fn name(&self) -> Result<String> {
+        self.getkey("DeviceName")
     }
 
-    pub fn name(&self, device: &str) -> Result<String> {
-        self.getkey(device, "DeviceName")
-    }
-
-    pub fn platform(&self, _device: &str) -> Result<Platform> {
+    pub fn platform(&self) -> Result<Platform> {
         Ok(Platform::Ios)
     }
 
-    pub fn arch(&self, device: &str) -> Result<Arch> {
-        match self.getkey(device, "CPUArchitecture")?.as_str() {
+    pub fn arch(&self) -> Result<Arch> {
+        match self.getkey("CPUArchitecture")?.as_str() {
             "arm64" => Ok(Arch::Arm64),
             arch => anyhow::bail!("unsupported arch {}", arch),
         }
     }
 
-    pub fn details(&self, device: &str) -> Result<String> {
-        let name = self.getkey(device, "ProductName")?;
-        let version = self.getkey(device, "ProductVersion")?;
+    pub fn details(&self) -> Result<String> {
+        let name = self.getkey("ProductName")?;
+        let version = self.getkey("ProductVersion")?;
         Ok(format!("{} {}", name, version))
     }
 
-    pub fn lldb(&self, _device: &str, _executable: &Path) -> Result<()> {
+    pub fn lldb(&self, _executable: &Path) -> Result<()> {
         anyhow::bail!("unimplemented");
     }
 }

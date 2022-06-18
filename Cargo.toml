@@ -4,6 +4,7 @@ members = [
     "appbundle",
     "appimage",
     "dmg",
+    "mdb",
     "mvn",
     "msix",
     "pri",

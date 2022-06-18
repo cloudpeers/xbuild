@@ -1,4 +1,4 @@
-use crate::devices::PartialRunner;
+use crate::devices::{DeviceId, PartialRunner};
 use crate::{Arch, Platform};
 use anyhow::Result;
 use std::io::{BufRead, BufReader};
@@ -9,6 +9,10 @@ use std::process::{Command, Stdio};
 pub(crate) struct Host;
 
 impl Host {
+    pub fn id(&self) -> &DeviceId {
+        &DeviceId::Host
+    }
+
     pub fn name(&self) -> Result<String> {
         if cfg!(target_os = "linux") {
             let output = Command::new("uname").output()?;

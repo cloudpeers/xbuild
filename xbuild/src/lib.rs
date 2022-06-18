@@ -1,6 +1,6 @@
 use crate::cargo::{Cargo, CargoBuild, CrateType};
 use crate::config::{Config, Manifest};
-use crate::devices::Device;
+use crate::devices::{Device, DeviceId};
 use crate::flutter::Flutter;
 use anyhow::Result;
 use clap::Parser;
@@ -375,7 +375,7 @@ pub struct BuildTargetArgs {
     /// Build artifacts for target device. To find the device
     /// identifier of a connected device run `x devices`.
     #[clap(long, conflicts_with = "format", conflicts_with = "store")]
-    device: Option<Device>,
+    device: Option<DeviceId>,
     /// Build artifacts with format. Can be one of `aab`,
     /// `apk`, `appbundle`, `appdir`, `appimage`, `dmg`,
     /// `ipa`, `msix`.
@@ -401,7 +401,7 @@ pub struct BuildTargetArgs {
 }
 
 impl BuildTargetArgs {
-    pub fn build_target(self) -> Result<BuildTarget> {
+    pub fn build_target(self) -> Result<(BuildTarget, Option<Device>)> {
         let signer = if let Some(pem) = self.pem.as_ref() {
             anyhow::ensure!(pem.exists(), "pem file doesn't exist {}", pem.display());
             Some(Signer::from_path(pem)?)
@@ -411,11 +411,12 @@ impl BuildTargetArgs {
             None
         };
         let store = self.store;
-        let device = if self.platform.is_none() && store.is_none() && self.device.is_none() {
-            Some(Device::host())
+        let device_id = if self.platform.is_none() && store.is_none() && self.device.is_none() {
+            Some(DeviceId::Host)
         } else {
             self.device
         };
+        let mut device = device_id.map(Device::connect).transpose()?;
         let platform = if let Some(platform) = self.platform {
             platform
         } else if let Some(store) = store {
@@ -425,7 +426,7 @@ impl BuildTargetArgs {
                 Store::Play => Platform::Android,
                 Store::Sideload => anyhow::bail!("sideload store requires platform arg"),
             }
-        } else if let Some(device) = device.as_ref() {
+        } else if let Some(device) = device.as_mut() {
             device.platform()?
         } else {
             unreachable!();
@@ -439,10 +440,10 @@ impl BuildTargetArgs {
                 Store::Play => vec![Arch::Arm64],
                 Store::Sideload => anyhow::bail!("sideload store requires arch arg"),
             }
-        } else if let Some(device) = device.as_ref() {
+        } else if let Some(device) = device.as_mut() {
             vec![device.arch()?]
         } else {
-            unreachable!();
+            anyhow::bail!("--arch --device or --store needs to be provided");
         };
         let opt = if self.release || (!self.debug && self.store.is_some()) {
             Opt::Release
@@ -479,27 +480,26 @@ impl BuildTargetArgs {
                 notarization_key_and_issuer = Some((api_key, api_issuer));
             }
         }
-        Ok(BuildTarget {
+        let target = BuildTarget {
             opt,
             platform,
             archs,
             format,
-            device,
             store,
             signer,
             provisioning_profile,
             notarization_key_and_issuer,
-        })
+        };
+        Ok((target, device))
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BuildTarget {
     opt: Opt,
     platform: Platform,
     archs: Vec<Arch>,
     format: Format,
-    device: Option<Device>,
     store: Option<Store>,
     signer: Option<Signer>,
     provisioning_profile: Option<Vec<u8>>,
@@ -523,10 +523,6 @@ impl BuildTarget {
         self.format
     }
 
-    pub fn device(&self) -> Option<&Device> {
-        self.device.as_ref()
-    }
-
     pub fn store(&self) -> Option<Store> {
         self.store
     }
@@ -535,13 +531,6 @@ impl BuildTarget {
         self.archs
             .iter()
             .map(|arch| CompileTarget::new(self.platform, *arch, self.opt))
-    }
-
-    pub fn is_host(&self) -> bool {
-        self.device
-            .as_ref()
-            .map(|device| device.is_host())
-            .unwrap_or_default()
     }
 
     pub fn signer(&self) -> Option<&Signer> {
@@ -575,11 +564,11 @@ pub struct BuildEnv {
 }
 
 impl BuildEnv {
-    pub fn new(args: BuildArgs) -> Result<Self> {
+    pub fn new(args: BuildArgs) -> Result<(Self, Option<Device>)> {
         let verbose = args.verbose;
         let offline = args.cargo.offline;
         let cargo = args.cargo.cargo()?;
-        let build_target = args.build_target.build_target()?;
+        let (build_target, device) = args.build_target.build_target()?;
         let build_dir = cargo.target_dir().join("x");
         let cache_dir = dirs::cache_dir().unwrap().join("x");
         let pubspec = cargo.root_dir().join("pubspec.yaml");
@@ -607,7 +596,7 @@ impl BuildEnv {
             .icon(build_target.platform())
             .map(|icon| cargo.root_dir().join(icon));
         let name = config.name;
-        Ok(Self {
+        let env = Self {
             name,
             build_target,
             pubspec,
@@ -620,7 +609,8 @@ impl BuildEnv {
             cache_dir,
             verbose,
             offline,
-        })
+        };
+        Ok((env, device))
     }
 
     pub fn name(&self) -> &str {

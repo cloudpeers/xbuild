@@ -16,10 +16,11 @@ pub use doctor::doctor;
 pub use new::new;
 
 pub fn devices() -> Result<()> {
-    for device in Device::list()? {
+    for device_id in Device::list()? {
+        let mut device = Device::connect(device_id)?;
         println!(
             "{:50}{:20}{:20}{}",
-            device.to_string(),
+            device.id().to_string(),
             device.name()?,
             format_args!("{} {}", device.platform()?, device.arch()?),
             device.details()?,
@@ -53,9 +54,9 @@ pub fn update(env: &BuildEnv) -> Result<()> {
     Ok(())
 }
 
-pub fn run(env: &BuildEnv) -> Result<()> {
+pub fn run(env: &BuildEnv, device: Option<Device>) -> Result<()> {
     let out = env.executable();
-    if let Some(device) = env.target().device() {
+    if let Some(device) = device {
         device
             .run(&out, env.has_dart_code())?
             .attach(env.root_dir(), env.target_file())?;
@@ -65,8 +66,8 @@ pub fn run(env: &BuildEnv) -> Result<()> {
     Ok(())
 }
 
-pub fn lldb(env: &BuildEnv) -> Result<()> {
-    if let Some(device) = env.target().device() {
+pub fn lldb(env: &BuildEnv, mut device: Option<Device>) -> Result<()> {
+    if let Some(device) = device.as_mut() {
         let target = CompileTarget::new(device.platform()?, device.arch()?, env.target().opt());
         let cargo_dir = env
             .build_dir()

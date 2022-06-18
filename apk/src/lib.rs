@@ -79,7 +79,7 @@ impl Apk {
 
     pub fn add_dex(&mut self, dex: &Path) -> Result<()> {
         self.zip
-            .add_file(dex, Path::new("classes.dex"), ZipFileOptions::Compressed)?;
+            .add_file(dex, Path::new("classes.dex"), ZipFileOptions::Aligned(4))?;
         Ok(())
     }
 

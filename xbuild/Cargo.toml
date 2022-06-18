@@ -7,6 +7,7 @@ repository = "https://github.com/cloudpeers/x"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
+adb-rs = { git = "https://github.com/dvc94ch/adb-rs" }
 android-sdkmanager-rs = "0.5.0"
 anyhow = "1.0.56"
 apk = { version = "0.3.0", path = "../apk" }
@@ -28,6 +29,7 @@ msix = { version = "0.3.0", path = "../msix" }
 mvn = { version = "0.1.0", path = "../mvn" }
 path-slash = "0.1.4"
 reqwest = { version = "0.11.9", features = ["blocking"] }
+rsa = "0.6.1"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_json = "1.0.79"
 serde_yaml = "0.8.23"
